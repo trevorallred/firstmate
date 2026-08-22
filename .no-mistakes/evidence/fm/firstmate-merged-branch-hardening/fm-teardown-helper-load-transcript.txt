@@ -1,0 +1,4 @@
+bash: line 54: BASH_SOURCE[0]: unbound variable
+bash: line 54: /lib.sh: No such file or directory
+bash: line 55: fm_git_identity: command not found
+bash: line 57: ROOT: unbound variable

@@ -1,0 +1,3 @@
+ok - local-only worktree with work merged into local main is torn down (no regression), and its task branch is dropped inline
+ok - teardown discovers a merged PR by branch name, tears down when no pr= was ever recorded, and drops its task branch
+ok - local-only worktree with truly unpushed work is refused (safety preserved)
