@@ -1,0 +1,2 @@
+missing-adapter adapter-source exit=23
+CALLER_CONTROL_RETAINED
