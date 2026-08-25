@@ -598,6 +598,7 @@ test_routine_prune_defaults_on_and_allows_disable() {
   clone=$(build_pair "$home" routine_prune)
   remote="$home/remotes/routine_prune.git"
   ff_merge_task_branch "$clone" fm/task-default feature.txt landed
+  git -C "$clone" push -q origin main
   git -C "$clone" push -q -u origin fm/task-default
   git --git-dir="$remote" update-ref -d refs/heads/fm/task-default
   git -C "$clone" fetch -q --prune origin
@@ -608,6 +609,7 @@ test_routine_prune_defaults_on_and_allows_disable() {
     && fail "routine-prune-default: default fleet sync left an eligible branch"
 
   ff_merge_task_branch "$clone" fm/task-disabled disabled.txt landed
+  git -C "$clone" push -q origin main
   git -C "$clone" push -q -u origin fm/task-disabled
   git --git-dir="$remote" update-ref -d refs/heads/fm/task-disabled
   git -C "$clone" fetch -q --prune origin
@@ -852,7 +854,7 @@ test_live_git_cwd_in_clone_dir_blocks_removal() {
   out="$home/out-lockcwd"; err="$home/err-lockcwd"
 
   set +e
-  FLEET_TEST_LIVE_DIR="$clone" \
+  FLEET_TEST_LIVE_DIR="$(cd "$clone" && pwd -P)" \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=2 \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=0 \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS=0 \

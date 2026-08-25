@@ -330,7 +330,7 @@ Dirty clones, non-default branches, detached HEADs with unique commits, diverged
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips for remote refreshes.
 Those mode and remote gates also skip fleet-sync branch cleanup for local-only and no-origin projects.
-After a successful remote fetch, fleet sync prunes local branches whose upstream is gone and that no worktree still needs.
+After a successful remote fetch, fleet sync prunes a local branch with a gone upstream only when the shared GitHub-aware/content landedness proof and worktree guard both succeed.
 
 ## Self-updates stay safe
 

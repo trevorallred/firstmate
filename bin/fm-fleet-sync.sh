@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
-# branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
-# worktree still needs.
+# origin/<default> when safe, then prune a local branch with a gone upstream
+# only when the shared GitHub-aware/content landedness proof and worktree guard
+# both establish that deleting it cannot discard work.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -11,21 +11,16 @@
 # is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
 # ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
 # stashed, or discarded.
-# Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
-# and fetch failures for the remote-backed sync above - but every project,
-# local-only or not, first gets an unconditional git-only sweep of its own
-# fm/<task-id> branches (prune_merged_fm_branches, backed by the shared proof in
-# fm-branch-merge-lib.sh): a backstop for a branch fm-teardown.sh's own inline
-# cleanup did not or could not reach - e.g. a local-only fast-forward merge
-# whose branch survived past teardown, or a PR merged outside firstmate's own
-# flow. Never a factor in the STUCK/self-heal decisions above.
+# Local-only/no-origin projects, missing remotes/branches, and fetch failures
+# are benign skips for both the remote-backed refresh and its routine pruning.
 # A candidate under projects/ must be the root of its own work tree: git discovery
 # walks up, so a plain nested directory would otherwise resolve to the enclosing
 # repository (the firstmate checkout) and be synced under that directory's label.
 # Anything else is reported as "skipped: not a clone root" naming the repository
 # that would have been touched.
 # Pruning never deletes the checked-out branch or a branch that still has a
-# worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# worktree, and fails closed without the shared landedness proof; set
+# FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -215,15 +210,15 @@ fetch_with_packed_refs_lock_guard() {
 }
 
 prune_gone_branches() {
-  # Delete local branches whose upstream tracking branch is gone - the remote
-  # branch was deleted, provided shared landedness proof still establishes its
-  # work reached the default branch. Never the checked-out branch, and never a
-  # branch that still has a worktree (a live or not-yet-torn-down task). The
-  # separate no-mistakes recovery ref is retained here. We deliberately
+  # Delete local branches whose upstream tracking branch is gone only when the
+  # shared landedness proof still establishes their work reached the default
+  # branch. Never the checked-out branch, and never a branch that still has a
+  # worktree (a live or not-yet-torn-down task). The separate no-mistakes
+  # recovery ref is retained here. We deliberately
   # do NOT also require the branch to be an ancestor of origin/<default> - PRs in
   # this fleet are squash-merged, so a merged branch is never an ancestor and
-  # such a check would prune nothing. The no-worktree guard is the real safety
-  # net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
+  # such a check would prune nothing. The proof and no-worktree guard are the
+  # safety boundary. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
   [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
 
   local refline branch track tip
