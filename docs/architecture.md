@@ -255,8 +255,11 @@ Where a no-mistakes pipeline stores evidence in the repo, it publishes that PR-v
 This repo uses that setting, and its own `.no-mistakes/` directory remains local state that stays gitignored and is rejected by CI if tracked; [`configuration.md`](configuration.md) owns the setting.
 PR-based task merges go through `bin/fm-pr-merge.sh`, which records `pr=` and any available `pr_head=` through `bin/fm-pr-check.sh` before calling `gh-axi pr merge`.
 The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, invokes `gh-axi pr merge <n> --repo <owner>/<repo>`, defaults to `--squash`, preserves explicit merge-method flags, and rejects malformed URLs or repo override flags before recording merge state; a well-formed GitLab merge request URL (see [docs/gitlab-merge-watch.md](gitlab-merge-watch.md)) is refused too, explicitly, rather than sent to the wrong forge.
+GitHub merges also request deletion of the PR head branch as part of the merge.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
-[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
+After that landedness gate, teardown safely removes the task's own unneeded local and configured remote branch refs.
+[`bin/fm-branch-merge-lib.sh`](../bin/fm-branch-merge-lib.sh)'s header owns the landed-work proofs and PR-discovery fallback.
+[`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns stale-lock recovery.
 
 ## Optional Relay
 
@@ -326,8 +329,8 @@ Clean default-branch clones fast-forward to `origin/<default>`, and a clean deta
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips for remote refreshes.
-Before those mode and remote gates, fleet sync also safely prunes firstmate-owned `fm/<task-id>` branches whose tips are already contained in the local default branch and are not checked out in any worktree, so the backstop covers local-only and no-origin projects without discarding unmerged work.
-For remote-backed projects, it additionally prunes local branches whose upstream is gone and that no worktree still needs.
+Those mode and remote gates also skip fleet-sync branch cleanup for local-only and no-origin projects.
+After a successful remote fetch, fleet sync prunes a local branch with a gone upstream only when the shared GitHub-aware/content landedness proof and worktree guard both succeed.
 
 ## Self-updates stay safe
 

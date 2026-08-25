@@ -20,6 +20,11 @@
 # branch, one still checked out in a worktree, and the project's own default
 # branch are all left untouched.
 #
+# It also pins the clone-root guard: a plain directory under projects/ resolves,
+# through git's upward repository discovery, to the ENCLOSING repository - in a
+# firstmate home, the firstmate checkout itself - so it must be skipped by name
+# with the enclosing repo left untouched, in both the whole-fleet and
+# single-project forms, while a symlinked clone dir still syncs.
 # It also pins the orphaned .git/packed-refs.lock recovery in the fetch step
 # (fetch_with_packed_refs_lock_guard, backed by bin/fm-lock-lib.sh's shared
 # staleness proof): a provably-stale lock is retried then removed and the clone
@@ -368,6 +373,7 @@ test_local_only_skipped() {
   home=$(new_home)
   clone=$(build_pair "$home" iota)
   advance_origin "$home" iota C1
+  ff_merge_task_branch "$clone" fm/task-local-only feature.txt hello
   mkdir -p "$home/data"
   printf -- '- iota [local-only] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
 
@@ -375,16 +381,17 @@ test_local_only_skipped() {
 
   assert_contains "$out" "iota: skipped: local-only project" "local-only clone is skipped as before"
   assert_not_contains "$out" "STUCK" "local-only skip is not escalated to STUCK"
-  pass "local-only clone is skipped (benign), not flagged STUCK"
+  branch_exists "$clone" fm/task-local-only \
+    || fail "local-only-skip: routine fleet sync deleted a merged task branch"
+  pass "local-only clone is skipped (benign), retaining its merged task branch for authorized cleanup"
 }
 
-# --- prune_merged_fm_branches fixtures --------------------------------------
+# --- exact-tip deletion race fixtures ---------------------------------------
 #
 # fm-merge-local.sh's own effect, reproduced with plain git rather than by
 # invoking that script: an fm/<id> branch with one real commit, fast-forward
-# merged into local main. This is exactly the state fm-fleet-sync.sh's
-# fm/<task-id> sweep (prune_merged_fm_branches, backed by
-# bin/fm-branch-merge-lib.sh) must recognize as safely deletable.
+# merged into local main. The shared exact-tip deletion helper must preserve it
+# if it advances or becomes checked out during deletion.
 ff_merge_task_branch() {
   local clone=$1 branch=$2 file=$3 content=$4
   git -C "$clone" branch -q "$branch"
@@ -398,101 +405,6 @@ ff_merge_task_branch() {
 
 branch_exists() {
   git -C "$1" show-ref --verify --quiet "refs/heads/$2"
-}
-
-test_local_only_prunes_merged_task_branch() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" sigma)
-  ff_merge_task_branch "$clone" fm/task-a feature.txt hello
-  mkdir -p "$home/data"
-  printf -- '- sigma [local-only] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "sigma: pruned fm/task-a" \
-    "local-only project still gets its merged fm/* branch swept"
-  branch_exists "$clone" fm/task-a \
-    && fail "local-only-prune: fm/task-a should have been deleted"
-  pass "the local-only backstop sweep prunes an fm/* branch already fast-forward-merged into local main"
-}
-
-test_no_origin_prunes_merged_task_branch() {
-  local home clone out
-  home=$(new_home)
-  clone="$home/projects/xi"
-  git init -q "$clone"
-  git -C "$clone" symbolic-ref HEAD refs/heads/main
-  commit_file "$clone" file.txt v0 C0
-  ff_merge_task_branch "$clone" fm/task-b feature.txt hello
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "xi: pruned fm/task-b" \
-    "a remote-less project still gets its merged fm/* branch swept"
-  branch_exists "$clone" fm/task-b \
-    && fail "no-origin-prune: fm/task-b should have been deleted"
-  pass "the backstop sweep runs with no origin remote at all (pure local-only clone, not just local-only mode)"
-}
-
-test_detached_project_prunes_merged_task_branch() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" chi)
-  ff_merge_task_branch "$clone" fm/task-detached feature.txt hello
-  git -C "$clone" checkout -q --detach
-  mkdir -p "$home/data"
-  printf -- '- chi [local-only] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "chi: pruned fm/task-detached" \
-    "a detached project still deletes a branch proved merged into main"
-  branch_exists "$clone" fm/task-detached \
-    && fail "detached-prune: fm/task-detached should have been deleted"
-  pass "the shared sweep deletes against its explicit default-branch proof even from detached HEAD"
-}
-
-test_unrelated_checkout_prunes_branch_merged_into_default() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" unrelated_head)
-  # Make an unrelated branch before main advances, so it does not contain the
-  # task commit. Fleet sync still must use its explicit main proof, rather than
-  # letting `git branch -d` accidentally judge mergedness against this HEAD.
-  git -C "$clone" branch -q unrelated
-  ff_merge_task_branch "$clone" fm/task-unrelated feature.txt hello
-  git -C "$clone" checkout -q unrelated
-  commit_file "$clone" unrelated.txt value "unrelated work"
-  mkdir -p "$home/data"
-  printf -- '- unrelated_head [local-only] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_contains "$out" "unrelated_head: pruned fm/task-unrelated" \
-    "the sweep must delete a branch proved merged into main even from unrelated HEAD"
-  branch_exists "$clone" fm/task-unrelated \
-    && fail "unrelated-head-prune: fm/task-unrelated should have been deleted"
-  pass "the final safe deletion uses the explicit default-branch merge target, not the caller's unrelated checkout"
-}
-
-test_unmerged_task_branch_is_left_alone() {
-  local home clone out
-  home=$(new_home)
-  clone=$(build_pair "$home" omicron)
-  git -C "$clone" branch -q fm/task-c
-  git -C "$clone" checkout -q fm/task-c
-  commit_file "$clone" feature.txt hello "unmerged work"
-  git -C "$clone" checkout -q main
-  mkdir -p "$home/data"
-  printf -- '- omicron [local-only] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
-  out=$(run_sync "$home" "$clone")
-
-  assert_not_contains "$out" "pruned fm/task-c" "an unmerged fm/* branch must never be reported as pruned"
-  branch_exists "$clone" fm/task-c \
-    || fail "unmerged-prune: fm/task-c was deleted despite never being merged"
-  pass "the backstop sweep leaves an unmerged/diverged fm/* branch untouched"
 }
 
 test_branch_update_between_proof_and_delete_is_left_alone() {
@@ -535,6 +447,55 @@ EOF
   pass "a branch update between merged proof and deletion is left intact"
 }
 
+test_branch_rewind_at_delete_is_left_alone() {
+  local home clone merged_tip rewind_tip ready release holder_pid delete_pid delete_rc i
+  home=$(new_home)
+  clone=$(build_pair "$home" rewind_race)
+  ff_merge_task_branch "$clone" fm/task-rewind feature.txt merged
+  merged_tip=$(git -C "$clone" rev-parse fm/task-rewind)
+  rewind_tip=$(git -C "$clone" rev-parse "$merged_tip^")
+  ready="$home/rewind-holder-ready"
+  release="$home/rewind-holder-release"
+
+  bash -c '
+    . "$1"
+    locked_rewind() {
+      local repo=$1 branch=$2 expected=$3 replacement=$4 ready=$5 release=$6
+      : > "$ready"
+      while [ ! -e "$release" ]; do sleep 0.02; done
+      git -C "$repo" update-ref "refs/heads/$branch" "$replacement" "$expected"
+    }
+    fm_branch_with_cleanup_lock "$2" fm/task-rewind locked_rewind \
+      "$3" "$4" "$5" "$6"
+  ' bash "$ROOT/bin/fm-branch-merge-lib.sh" "$clone" "$merged_tip" "$rewind_tip" "$ready" "$release" &
+  holder_pid=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ -e "$ready" ] && break
+    sleep 0.02
+    i=$((i + 1))
+  done
+  [ -e "$ready" ] || fail "concurrent-branch-rewind: lock holder never became ready"
+
+  bash -c '. "$1"; fm_branch_delete_local_proven_tip "$2" fm/task-rewind "$3"' \
+    bash "$ROOT/bin/fm-branch-merge-lib.sh" "$clone" "$merged_tip" &
+  delete_pid=$!
+  sleep 0.2
+  kill -0 "$delete_pid" 2>/dev/null \
+    || fail "concurrent-branch-rewind: deletion did not wait for the per-branch lock"
+  : > "$release"
+  wait "$holder_pid" || fail "concurrent-branch-rewind: locked ref move failed"
+  delete_rc=0
+  wait "$delete_pid" || delete_rc=$?
+  [ "$delete_rc" -ne 0 ] || fail "concurrent-branch-rewind: deletion unexpectedly succeeded"
+
+  branch_exists "$clone" fm/task-rewind \
+    || fail "concurrent-branch-rewind: branch was deleted after its tip changed"
+  [ "$(git -C "$clone" rev-parse fm/task-rewind)" = "$rewind_tip" ] \
+    || fail "concurrent-branch-rewind: rewound tip was not preserved"
+  pass "the per-branch lock serializes a competing ref move and the in-lock exact-tip check preserves it"
+}
+
 test_worktree_added_between_proof_and_delete_is_left_alone() {
   local home clone fakegit real_git worktree
   home=$(new_home)
@@ -545,9 +506,13 @@ test_worktree_added_between_proof_and_delete_is_left_alone() {
   real_git=$(command -v git)
   cat > "$fakegit/git" <<'EOF'
 #!/bin/sh
-if [ "$1" = "-C" ] && [ "$3" = "branch" ] \
-  && [ "$4" = "-d" ] && [ "$6" = "$RACE_BRANCH" ]; then
-  "$REAL_GIT" -C "$RACE_REPO" worktree add -q "$RACE_WORKTREE" "$RACE_BRANCH"
+if [ "$1" = "-C" ] && [ "$2" = "$RACE_REPO" ] \
+  && [ "$3" = "merge-base" ] && [ "$4" = "--is-ancestor" ]; then
+  "$REAL_GIT" "$@"; status=$?
+  if [ "$status" -eq 0 ]; then
+    "$REAL_GIT" -C "$RACE_REPO" worktree add -q "$RACE_WORKTREE" "$RACE_BRANCH"
+  fi
+  exit "$status"
 fi
 exec "$REAL_GIT" "$@"
 EOF
@@ -566,27 +531,94 @@ EOF
   pass "a worktree checkout between merged proof and deletion leaves the branch intact"
 }
 
-test_gone_unmerged_task_branch_is_left_alone() {
-  local home clone remote out
+test_worktree_checkout_at_final_delete_is_refused() {
+  local home clone fakegit real_git worktree marker
+  home=$(new_home)
+  clone=$(build_pair "$home" final_worktree_race)
+  ff_merge_task_branch "$clone" fm/task-final-worktree feature.txt merged
+  fakegit="$home/fake-git"; mkdir -p "$fakegit"
+  worktree="$home/active-final-task-worktree"
+  marker="$home/final-worktree-status"
+  real_git=$(command -v git)
+  cat > "$fakegit/git" <<'EOF'
+#!/bin/sh
+if [ "$1" = "-C" ] && [ "$2" = "$RACE_REPO" ] \
+  && [ "$3" = "branch" ] && [ "$4" = "-D" ] \
+  && [ "$6" = "$RACE_BRANCH" ]; then
+  "$REAL_GIT" -C "$RACE_REPO" worktree add -q "$RACE_WORKTREE" "$RACE_BRANCH" >/dev/null 2>&1
+  printf '%s\n' "$?" > "$RACE_MARKER"
+fi
+exec "$REAL_GIT" "$@"
+EOF
+  chmod +x "$fakegit/git"
+
+  PATH="$fakegit:$PATH" REAL_GIT="$real_git" RACE_REPO="$clone" \
+    RACE_BRANCH=fm/task-final-worktree RACE_WORKTREE="$worktree" RACE_MARKER="$marker" \
+    bash -c '. "$1"; fm_branch_delete_if_safely_merged "$2" fm/task-final-worktree refs/heads/main' \
+    bash "$ROOT/bin/fm-branch-merge-lib.sh" "$clone" \
+    && fail "final-worktree-checkout: deletion unexpectedly succeeded"
+
+  [ "$(cat "$marker")" -eq 0 ] \
+    || fail "final-worktree-checkout: the fixture did not check out the branch at the native deletion boundary"
+  branch_exists "$clone" fm/task-final-worktree \
+    || fail "final-worktree-checkout: native branch deletion removed a concurrently checked-out branch"
+  [ "$(git -C "$worktree" symbolic-ref --short HEAD)" = fm/task-final-worktree ] \
+    || fail "final-worktree-checkout: linked worktree did not retain its checked-out task branch"
+  pass "git's native branch deletion guard refuses a checkout at the final locked boundary"
+}
+
+test_gone_upstream_unmerged_task_branch_is_retained() {
+  local home clone remote no_mistakes out
   home=$(new_home)
   clone=$(build_pair "$home" upsilon)
   remote="$home/remotes/upsilon.git"
+  no_mistakes="$home/remotes/upsilon-no-mistakes.git"
+  git init -q --bare "$no_mistakes"
+  git -C "$clone" remote add no-mistakes "$no_mistakes"
   git -C "$clone" checkout -q -b fm/task-gone
   commit_file "$clone" feature.txt hello "unmerged work"
   git -C "$clone" push -q -u origin fm/task-gone
+  git -C "$clone" push -q no-mistakes fm/task-gone
   git --git-dir="$remote" update-ref -d refs/heads/fm/task-gone
+  git -C "$clone" checkout -q main
   git -C "$clone" fetch -q --prune origin
-  mkdir -p "$home/data"
-  printf -- '- upsilon [local-only] - test project (added 2026-06-27)\n' > "$home/data/projects.md"
-
   out=$(run_sync "$home" "$clone")
 
-  assert_not_contains "$out" "pruned fm/task-gone" "a [gone] upstream without a merge must never be reported as pruned"
+  assert_not_contains "$out" "pruned fm/task-gone" "an unmerged [gone] upstream must not be reported as pruned"
   branch_exists "$clone" fm/task-gone \
-    || fail "gone-unmerged-prune: fm/task-gone was deleted despite never being merged"
-  [ "$(git -C "$clone" for-each-ref --format='%(upstream:track)' refs/heads/fm/task-gone)" = "[gone]" ] \
-    || fail "gone-unmerged-prune: expected pruned tracking branch to report [gone]"
-  pass "the backstop sweep leaves an unmerged fm/* branch with a [gone] upstream untouched"
+    || fail "gone-upstream-prune: fm/task-gone was deleted despite no landedness proof"
+  git --git-dir="$no_mistakes" show-ref --verify --quiet refs/heads/fm/task-gone \
+    || fail "gone-upstream-prune: fleet sync deleted the unproved no-mistakes recovery ref"
+  pass "the gone-upstream sweep preserves an inactive unmerged local fm/* branch and its recovery ref"
+}
+
+test_routine_prune_defaults_on_and_allows_disable() {
+  local home clone remote out
+  home=$(new_home)
+  clone=$(build_pair "$home" routine_prune)
+  remote="$home/remotes/routine_prune.git"
+  ff_merge_task_branch "$clone" fm/task-default feature.txt landed
+  git -C "$clone" push -q origin main
+  git -C "$clone" push -q -u origin fm/task-default
+  git --git-dir="$remote" update-ref -d refs/heads/fm/task-default
+  git -C "$clone" fetch -q --prune origin
+
+  out=$(run_sync "$home" "$clone")
+  assert_contains "$out" "pruned fm/task-default" "routine sync must prune an eligible branch by default"
+  branch_exists "$clone" fm/task-default \
+    && fail "routine-prune-default: default fleet sync left an eligible branch"
+
+  ff_merge_task_branch "$clone" fm/task-disabled disabled.txt landed
+  git -C "$clone" push -q origin main
+  git -C "$clone" push -q -u origin fm/task-disabled
+  git --git-dir="$remote" update-ref -d refs/heads/fm/task-disabled
+  git -C "$clone" fetch -q --prune origin
+
+  out=$(FM_FLEET_PRUNE=0 run_sync "$home" "$clone")
+  assert_not_contains "$out" "pruned fm/task-disabled" "explicit fleet prune opt-out must preserve the branch"
+  branch_exists "$clone" fm/task-disabled \
+    || fail "routine-prune-disable: disabled fleet sync deleted an eligible branch"
+  pass "routine branch pruning defaults on and honors the explicit disable switch"
 }
 
 test_checked_out_task_branch_is_left_alone() {
@@ -606,7 +638,7 @@ test_checked_out_task_branch_is_left_alone() {
   assert_not_contains "$out" "pruned fm/task-d" "a branch still checked out in a worktree must never be reported as pruned"
   branch_exists "$clone" fm/task-d \
     || fail "checked-out-prune: fm/task-d was deleted while still checked out in $wt"
-  pass "the backstop sweep leaves an fm/* branch with an active worktree untouched"
+  pass "routine fleet sync leaves a branch with an active worktree untouched"
 }
 
 test_prune_never_targets_the_default_branch() {
@@ -696,6 +728,24 @@ test_single_project_unresolvable_name_still_skips() {
 
   assert_contains "$out" "skipped: not a directory" "an unresolvable name still hits the existing not-a-directory skip"
   pass "single-project form leaves a genuinely bad name unresolved"
+}
+
+test_single_project_nested_path_is_not_synced() {
+  local home clone nested before after out
+  home=$(new_home)
+  clone=$(build_pair "$home" nested-root)
+  advance_origin "$home" nested-root C1
+  nested="$clone/nested"
+  mkdir -p "$nested"
+  before=$(git -C "$clone" rev-parse main)
+
+  out=$(run_sync "$home" "$nested")
+
+  assert_contains "$out" "skipped: not a clone root" "a nested path must be rejected before fleet sync"
+  after=$(git -C "$clone" rev-parse main)
+  [ "$after" = "$before" ] \
+    || fail "nested-project-root: fleet sync mutated the enclosing repository"
+  pass "single-project sync leaves an enclosing repository untouched for a nested path"
 }
 
 test_whole_fleet_form() {
@@ -804,7 +854,7 @@ test_live_git_cwd_in_clone_dir_blocks_removal() {
   out="$home/out-lockcwd"; err="$home/err-lockcwd"
 
   set +e
-  FLEET_TEST_LIVE_DIR="$clone" \
+  FLEET_TEST_LIVE_DIR="$(cd "$clone" && pwd -P)" \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=2 \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=0 \
   FM_FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS=0 \
@@ -877,14 +927,12 @@ test_on_default_clean_behind_fast_forwards
 test_already_current_unchanged
 test_no_origin_skipped
 test_local_only_skipped
-test_local_only_prunes_merged_task_branch
-test_no_origin_prunes_merged_task_branch
-test_detached_project_prunes_merged_task_branch
-test_unrelated_checkout_prunes_branch_merged_into_default
-test_unmerged_task_branch_is_left_alone
 test_branch_update_between_proof_and_delete_is_left_alone
+test_branch_rewind_at_delete_is_left_alone
 test_worktree_added_between_proof_and_delete_is_left_alone
-test_gone_unmerged_task_branch_is_left_alone
+test_worktree_checkout_at_final_delete_is_refused
+test_gone_upstream_unmerged_task_branch_is_retained
+test_routine_prune_defaults_on_and_allows_disable
 test_checked_out_task_branch_is_left_alone
 test_prune_never_targets_the_default_branch
 test_single_project_by_bare_name_resolves
@@ -892,6 +940,7 @@ test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves
 test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
+test_single_project_nested_path_is_not_synced
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
 test_orphaned_stale_packed_refs_lock_recovers

@@ -189,6 +189,10 @@ if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
   printf '%s\n' '  --archive-body'
   exit 0
 fi
+if [ "${1:-}" = hold ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi hold <id> --kind captain'
+  exit 0
+fi
 if [ "${1:-}" = mv ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
   exit 0
@@ -551,6 +555,7 @@ run_teardown() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 "$@"
@@ -670,7 +675,7 @@ test_no_mistakes_origin_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-origin)
   write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "shippable work"
+  wt_commit_file "$case_dir" feature.txt unmerged "unmerged work"
   # Push the task branch to origin and fetch so the worktree sees it.
   git -C "$case_dir/wt" push -q origin fm/task-x1
   git -C "$case_dir/project" fetch -q origin
@@ -684,7 +689,9 @@ test_no_mistakes_origin_remote_allows() {
   ! grep -q REFUSED "$case_dir/stderr" || fail "nm-origin: teardown printed a REFUSED line"
   grep -F 'blockers are gone and date is due' "$case_dir/stdout" >/dev/null \
     || fail "nm-origin: teardown manual prompt did not preserve date-gate check"
-  pass "no-mistakes worktree with HEAD on origin is torn down (no regression)"
+  task_branch_exists "$case_dir" \
+    || fail "nm-origin: teardown deleted a pushed-but-unmerged task branch"
+  pass "no-mistakes teardown preserves a pushed-but-unmerged task branch"
 }
 
 test_no_mistakes_truly_unpushed_refuses() {
@@ -726,6 +733,41 @@ test_squash_merged_branch_deleted_allows() {
   expect_code 0 "$rc" "squash-merged: teardown should succeed when the PR is merged"
   ! grep -q REFUSED "$case_dir/stderr" || fail "squash-merged: teardown printed a REFUSED line"
   pass "squash-merged + deleted-branch worktree (PR merged) is torn down (the fix)"
+}
+
+test_teardown_prunes_landed_task_from_both_remotes() {
+  local case_dir rc pr_head no_mistakes
+  case_dir=$(make_case teardown-remote-cleanup)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+
+  no_mistakes="$case_dir/no-mistakes.git"
+  git init -q --bare "$no_mistakes"
+  git -C "$case_dir/project" remote add no-mistakes "$no_mistakes"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/wt" push -q no-mistakes fm/task-x1
+  land_on_origin_main "$case_dir" feature.txt hello
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "teardown-remote-cleanup: landed teardown should succeed"
+  git --git-dir="$case_dir/origin.git" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    && fail "teardown-remote-cleanup: origin task branch survived"
+  git --git-dir="$no_mistakes" show-ref --verify --quiet refs/heads/fm/task-x1 \
+    && fail "teardown-remote-cleanup: no-mistakes task branch survived"
+  task_branch_exists "$case_dir" \
+    && fail "teardown-remote-cleanup: local task branch survived"
+  assert_grep 'teardown: pruned origin/fm/task-x1' "$case_dir/stdout" \
+    "teardown-remote-cleanup: origin cleanup was not reported"
+  assert_grep 'teardown: pruned no-mistakes/fm/task-x1' "$case_dir/stdout" \
+    "teardown-remote-cleanup: no-mistakes cleanup was not reported"
+  pass "ordinary teardown removes the exact landed task tip from origin and no-mistakes"
 }
 
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head() {
@@ -1321,7 +1363,30 @@ test_local_only_force_overrides_unpushed() {
 
   expect_code 0 "$rc" "force-override: --force should bypass the unpushed-work check"
   ! grep -q REFUSED "$case_dir/stderr" || fail "force-override: REFUSED printed despite --force"
-  pass "local-only worktree with unpushed work is torn down under --force (escape hatch)"
+  ! task_branch_exists "$case_dir" \
+    || fail "force-override: forced teardown retained the explicitly discarded task branch"
+  pass "forced teardown discards the unpushed worktree and its task branch"
+}
+
+test_scout_teardown_drops_scratch_task_branch() {
+  local case_dir rc
+  case_dir=$(make_case scout-branch-retention)
+  write_meta "$case_dir" local-only scout
+  printf '%s\n' 'decisions_reviewed=1' >> "$case_dir/state/task-x1.meta"
+  add_compatible_tasks_axi "$case_dir"
+  wt_commit "$case_dir" "unlanded scout notes"
+  mkdir -p "$case_dir/data/task-x1"
+  printf '%s\n' '# Scout report' > "$case_dir/data/task-x1/report.md"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "scout-branch-retention: reported scout teardown should succeed"
+  ! task_branch_exists "$case_dir" \
+    || fail "scout-branch-retention: scout teardown retained its disposable task branch"
+  pass "reported scout teardown drops its disposable task branch"
 }
 
 test_teardown_missing_busy_sidecar_completes() {
@@ -2629,7 +2694,9 @@ test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
+test_teardown_prunes_landed_task_from_both_remotes
 test_local_only_force_overrides_unpushed
+test_scout_teardown_drops_scratch_task_branch
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
 test_herdr_flat_teardown_refuses_orphaning_records_then_retry_completes

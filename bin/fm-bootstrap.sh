@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bootstrap detection, best-effort fleet refresh/prune, and installs.
+# Bootstrap detection, best-effort fleet refresh and safely proven landed-branch
+# pruning, and installs.
 # Usage: fm-bootstrap.sh
 #          Detect: prints one line per actionable problem, or an explicit
 #          BOOTSTRAP_INFO no-action fact for completed benign bootstrap work, and

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
-# branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
-# worktree still needs.
+# origin/<default> when safe, then prune a local branch with a gone upstream
+# only when the shared GitHub-aware/content landedness proof and worktree guard
+# both establish that deleting it cannot discard work.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
 # no unique commits (it is an ancestor of origin/<default>) and whose <default>
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
@@ -11,16 +11,16 @@
 # is left untouched and reported as a quantified, loud "STUCK: ... N commits behind
 # ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
 # stashed, or discarded.
-# Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
-# and fetch failures for the remote-backed sync above - but every project,
-# local-only or not, first gets an unconditional git-only sweep of its own
-# fm/<task-id> branches (prune_merged_fm_branches, backed by the shared proof in
-# fm-branch-merge-lib.sh): a backstop for a branch fm-teardown.sh's own inline
-# cleanup did not or could not reach - e.g. a local-only fast-forward merge
-# whose branch survived past teardown, or a PR merged outside firstmate's own
-# flow. Never a factor in the STUCK/self-heal decisions above.
+# Local-only/no-origin projects, missing remotes/branches, and fetch failures
+# are benign skips for both the remote-backed refresh and its routine pruning.
+# A candidate under projects/ must be the root of its own work tree: git discovery
+# walks up, so a plain nested directory would otherwise resolve to the enclosing
+# repository (the firstmate checkout) and be synced under that directory's label.
+# Anything else is reported as "skipped: not a clone root" naming the repository
+# that would have been touched.
 # Pruning never deletes the checked-out branch or a branch that still has a
-# worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# worktree, and fails closed without the shared landedness proof; set
+# FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -119,19 +119,7 @@ resolve_project_arg() {
 }
 
 default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
+  fm_branch_default_branch "$PROJ"
 }
 
 first_line() {
@@ -222,68 +210,30 @@ fetch_with_packed_refs_lock_guard() {
 }
 
 prune_gone_branches() {
-  # Delete local branches whose upstream tracking branch is gone - the remote
-  # branch was deleted, which in this fleet means its PR merged - as long as
-  # nothing still needs them. Never the checked-out branch, and never a branch
-  # that still has a worktree (a live or not-yet-torn-down task). "Gone" plus
-  # "no worktree" already proves the work landed: teardown removes a branch's
-  # worktree only after confirming the work reached the remote. We deliberately
+  # Delete local branches whose upstream tracking branch is gone only when the
+  # shared landedness proof still establishes their work reached the default
+  # branch. Never the checked-out branch, and never a branch that still has a
+  # worktree (a live or not-yet-torn-down task). The separate no-mistakes
+  # recovery ref is retained here. We deliberately
   # do NOT also require the branch to be an ancestor of origin/<default> - PRs in
   # this fleet are squash-merged, so a merged branch is never an ancestor and
-  # such a check would prune nothing. The no-worktree guard is the real safety
-  # net. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
+  # such a check would prune nothing. The proof and no-worktree guard are the
+  # safety boundary. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
   [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
 
-  local worktree_branches current refline branch track
-  worktree_branches=$(git -C "$PROJ" worktree list --porcelain 2>/dev/null \
-    | sed -n 's#^branch refs/heads/##p')
-  current=$(git -C "$PROJ" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  local refline branch track tip
 
   while IFS= read -r refline; do
     branch=${refline%% *}
     track=${refline#* }
     [ "$track" = "[gone]" ] || continue
     [ -n "$branch" ] || continue
-    [ "$branch" != "$current" ] || continue
-    if printf '%s\n' "$worktree_branches" | grep -Fxq -- "$branch"; then
-      continue
-    fi
-    if git -C "$PROJ" branch -D -- "$branch" >/dev/null 2>&1; then
+    tip=$(git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$branch") || continue
+    if fm_branch_delete_if_safely_gone "$PROJ" "$branch"; then
       echo "$label: pruned $branch"
     fi
   done < <(git -C "$PROJ" for-each-ref \
     --format='%(refname:short) %(upstream:track)' refs/heads 2>/dev/null)
-}
-
-# Backstop for the task-branch cleanup fm-teardown.sh normally does inline:
-# delete an fm/<task-id> branch whose tip is provably merged (fm-branch-merge-lib.sh's
-# shared ancestor proof - a fast-forward or non-squash merge already contains
-# its tip), scoped to firstmate's own fm/* naming so this never touches a branch
-# firstmate did not create. A "[gone]" upstream is deliberately not enough to
-# prove merge; the separately-owned prune_gone_branches flow covers
-# squash-merged PR cleanup. This is the ONLY sweep
-# that covers a local-only-mode project (prune_gone_branches above never runs
-# for one, since local-only skips the whole remote-backed sync below, and a
-# purely local fast-forward merge leaves no "[gone]" upstream to notice) and a
-# task whose worktree/teardown ran before the branch could be dropped inline.
-# Never the checked-out branch, and never a branch that still has a worktree
-# (a live or not-yet-torn-down task) - fm_branch_is_safely_merged enforces
-# both. Uses the LOCAL default branch as the merged-into ref, so it runs with
-# no fetch and no origin dependency; a remote-backed project whose local
-# default is still behind origin simply catches up on the next sweep once the
-# fast-forward below advances it. Set FM_FLEET_PRUNE=0 to skip pruning entirely.
-prune_merged_fm_branches() {
-  [ "${FM_FLEET_PRUNE:-1}" != "0" ] || return 0
-  local default branch
-  default=$(default_branch) || return 0
-  git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$default^{commit}" >/dev/null || return 0
-  while IFS= read -r branch; do
-    [ -n "$branch" ] || continue
-    [ "$branch" != "$default" ] || continue
-    if fm_branch_delete_if_safely_merged "$PROJ" "$branch" "refs/heads/$default"; then
-      echo "$label: pruned $branch (merged into $default)"
-    fi
-  done < <(git -C "$PROJ" for-each-ref --format='%(refname:short)' 'refs/heads/fm/*' 2>/dev/null)
 }
 
 # True when some worktree of $PROJ has $DEFAULT checked out (so we cannot attach
@@ -332,6 +282,7 @@ report_stuck() {
 }
 
 sync_project() {
+  local toplevel
   PROJ=$1
   label=$(project_label)
 
@@ -343,11 +294,22 @@ sync_project() {
     echo "$label: skipped: not a git repo"
     return 0
   fi
-
-  # Runs before every mode/remote gate below - git-only, no fetch - so a
-  # local-only or no-remote project still gets its merged fm/* branches swept,
-  # which nothing else in this script otherwise does for those projects.
-  prune_merged_fm_branches || true
+  PROJ=$(cd "$PROJ" && pwd -P) || {
+    echo "$label: skipped: cannot resolve project path"
+    return 0
+  }
+  toplevel=$(git -C "$PROJ" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "$label: skipped: not a git repo"
+    return 0
+  }
+  toplevel=$(cd "$toplevel" && pwd -P) || {
+    echo "$label: skipped: cannot resolve repository root"
+    return 0
+  }
+  if [ "$PROJ" != "$toplevel" ]; then
+    echo "$label: skipped: not a clone root ($toplevel)"
+    return 0
+  fi
 
   mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")
   mode=${mode_line%% *}
