@@ -1,0 +1,25 @@
+FM_TEST_BEGIN 2026-08-25T04:55:05Z tests/fm-branch-cleanup.test.sh family=pr-forge expected_gate_skip=none
+ok - full sweep deletes landed refs from both real remotes and preserves unlanded or checked-out branches
+ok - on-demand cleanup reuses the merged-PR proof for squash-landed tips across both remotes
+ok - an exact-tip lease preserves a remote branch that advances after landedness proof
+ok - remote-only cleanup shares the branch lock and preserves a branch checked out before deletion
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ok - fm-pr-merge's delete flag drives branch deletion against a real scratch origin
+FM_TEST_END 2026-08-25T04:55:38Z tests/fm-branch-cleanup.test.sh exit=0 duration_ms=32505 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=33258
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=32505 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-branch-cleanup.test.sh duration_ms=32505
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ok - fm-pr-merge's delete flag drives branch deletion against a real scratch origin
