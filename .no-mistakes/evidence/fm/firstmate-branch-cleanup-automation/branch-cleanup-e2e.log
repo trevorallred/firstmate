@@ -1,0 +1,15 @@
+$ timeout 90 tests/fm-branch-cleanup.test.sh
+ok - full sweep deletes landed refs from both real remotes and preserves unlanded or checked-out branches
+ok - on-demand cleanup reuses the merged-PR proof for squash-landed tips across both remotes
+ok - full sweep preserves an fm/* branch when it is the resolved default branch
+ok - an exact-tip lease preserves a remote branch that advances after landedness proof
+ok - remote-only cleanup shares the branch lock and preserves a branch checked out before deletion
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ok - fm-pr-merge's delete flag drives branch deletion against a real scratch origin
+exit_code=0
