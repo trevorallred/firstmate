@@ -287,6 +287,7 @@ report_stuck() {
 }
 
 sync_project() {
+  local toplevel
   PROJ=$1
   label=$(project_label)
 
@@ -296,6 +297,22 @@ sync_project() {
   fi
   if ! git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "$label: skipped: not a git repo"
+    return 0
+  fi
+  PROJ=$(cd "$PROJ" && pwd -P) || {
+    echo "$label: skipped: cannot resolve project path"
+    return 0
+  }
+  toplevel=$(git -C "$PROJ" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "$label: skipped: not a git repo"
+    return 0
+  }
+  toplevel=$(cd "$toplevel" && pwd -P) || {
+    echo "$label: skipped: cannot resolve repository root"
+    return 0
+  }
+  if [ "$PROJ" != "$toplevel" ]; then
+    echo "$label: skipped: not a clone root ($toplevel)"
     return 0
   fi
 

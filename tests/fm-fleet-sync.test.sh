@@ -728,6 +728,24 @@ test_single_project_unresolvable_name_still_skips() {
   pass "single-project form leaves a genuinely bad name unresolved"
 }
 
+test_single_project_nested_path_is_not_synced() {
+  local home clone nested before after out
+  home=$(new_home)
+  clone=$(build_pair "$home" nested-root)
+  advance_origin "$home" nested-root C1
+  nested="$clone/nested"
+  mkdir -p "$nested"
+  before=$(git -C "$clone" rev-parse main)
+
+  out=$(run_sync "$home" "$nested")
+
+  assert_contains "$out" "skipped: not a clone root" "a nested path must be rejected before fleet sync"
+  after=$(git -C "$clone" rev-parse main)
+  [ "$after" = "$before" ] \
+    || fail "nested-project-root: fleet sync mutated the enclosing repository"
+  pass "single-project sync leaves an enclosing repository untouched for a nested path"
+}
+
 test_whole_fleet_form() {
   local home behind current out
   home=$(new_home)
@@ -920,6 +938,7 @@ test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves
 test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
+test_single_project_nested_path_is_not_synced
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
 test_orphaned_stale_packed_refs_lock_recovers
