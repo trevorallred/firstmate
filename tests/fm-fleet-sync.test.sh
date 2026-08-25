@@ -567,7 +567,7 @@ EOF
   pass "git's native branch deletion guard refuses a checkout at the final locked boundary"
 }
 
-test_gone_upstream_task_branch_is_pruned() {
+test_gone_upstream_unmerged_task_branch_is_retained() {
   local home clone remote no_mistakes out
   home=$(new_home)
   clone=$(build_pair "$home" upsilon)
@@ -584,12 +584,12 @@ test_gone_upstream_task_branch_is_pruned() {
   git -C "$clone" fetch -q --prune origin
   out=$(run_sync "$home" "$clone")
 
-  assert_contains "$out" "pruned fm/task-gone" "an inactive [gone] upstream must be reported as pruned"
+  assert_not_contains "$out" "pruned fm/task-gone" "an unmerged [gone] upstream must not be reported as pruned"
   branch_exists "$clone" fm/task-gone \
-    && fail "gone-upstream-prune: fm/task-gone was retained despite its [gone] upstream"
+    || fail "gone-upstream-prune: fm/task-gone was deleted despite no landedness proof"
   git --git-dir="$no_mistakes" show-ref --verify --quiet refs/heads/fm/task-gone \
     || fail "gone-upstream-prune: fleet sync deleted the unproved no-mistakes recovery ref"
-  pass "the gone-upstream sweep prunes an inactive local fm/* branch while retaining its recovery ref"
+  pass "the gone-upstream sweep preserves an inactive unmerged local fm/* branch and its recovery ref"
 }
 
 test_routine_prune_defaults_on_and_allows_disable() {
@@ -911,7 +911,7 @@ test_branch_update_between_proof_and_delete_is_left_alone
 test_branch_rewind_at_delete_is_left_alone
 test_worktree_added_between_proof_and_delete_is_left_alone
 test_worktree_checkout_at_final_delete_is_refused
-test_gone_upstream_task_branch_is_pruned
+test_gone_upstream_unmerged_task_branch_is_retained
 test_routine_prune_defaults_on_and_allows_disable
 test_checked_out_task_branch_is_left_alone
 test_prune_never_targets_the_default_branch

@@ -216,12 +216,10 @@ fetch_with_packed_refs_lock_guard() {
 
 prune_gone_branches() {
   # Delete local branches whose upstream tracking branch is gone - the remote
-  # branch was deleted, which in this fleet means its PR merged - as long as
-  # nothing still needs them. Never the checked-out branch, and never a branch
-  # that still has a worktree (a live or not-yet-torn-down task). "Gone" plus
-  # "no worktree" is the established proof for this local cleanup only. The
-  # separate no-mistakes recovery ref is retained here: GitHub disappearance
-  # alone cannot prove that remote ref landed. We deliberately
+  # branch was deleted, provided shared landedness proof still establishes its
+  # work reached the default branch. Never the checked-out branch, and never a
+  # branch that still has a worktree (a live or not-yet-torn-down task). The
+  # separate no-mistakes recovery ref is retained here. We deliberately
   # do NOT also require the branch to be an ancestor of origin/<default> - PRs in
   # this fleet are squash-merged, so a merged branch is never an ancestor and
   # such a check would prune nothing. The no-worktree guard is the real safety

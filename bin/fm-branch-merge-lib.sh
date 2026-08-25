@@ -15,11 +15,9 @@
 #   3. its tip is an ancestor of the given "merged into" ref (a clean
 #      fast-forward, or any non-squash merge, already contains it - git's own
 #      `branch -d` can verify this itself).
-# The separate gone-upstream proof preserves fleet-sync's established squash
-# cleanup contract: a local branch whose upstream reads "[gone]" and which no
-# worktree has checked out is eligible for local cleanup. It is deliberately
-# not folded into the ancestor proof because a deleted remote ref alone does
-# not prove merge outside that lifecycle contract.
+# The separate gone-upstream proof recognizes the routine prune candidate, but
+# deletion still requires the GitHub-aware/content landedness proof. A deleted
+# remote ref alone does not prove merge.
 #
 # The GitHub-aware proof is the stronger fallback for squash merges and remote
 # cleanup. It proves the exact candidate commit is contained in a merged PR
@@ -136,9 +134,9 @@ fm_branch_is_safely_merged() {
   return 1
 }
 
-# fm_branch_is_safely_gone <repo> <branch> [expected_tip]: the established
-# fleet-sync squash cleanup proof. The optional expected tip binds a later
-# deletion to the ref state the caller inspected.
+# fm_branch_is_safely_gone <repo> <branch> [expected_tip]: prove a gone-upstream
+# branch is still landed. The optional expected tip binds a later deletion to
+# the ref state the caller inspected.
 fm_branch_is_safely_gone() {
   local repo=$1 branch=$2 expected_tip=${3:-} tip track default
   [ -n "$branch" ] || return 1
@@ -148,7 +146,8 @@ fm_branch_is_safely_gone() {
   [ -z "$expected_tip" ] || [ "$tip" = "$expected_tip" ] || return 1
   fm_branch_worktree_has_branch "$repo" "$branch" && return 1
   track=$(git -C "$repo" for-each-ref --format='%(upstream:track)' "refs/heads/$branch" 2>/dev/null)
-  [ "$track" = "[gone]" ]
+  [ "$track" = "[gone]" ] || return 1
+  fm_branch_work_is_landed "$repo" "$branch" "" "$tip"
 }
 
 # Internal counterpart for callers that already hold the branch cleanup lock.
