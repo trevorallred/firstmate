@@ -1,0 +1,4 @@
+ok - full sweep deletes landed refs from both real remotes and preserves unlanded or checked-out branches
+ok - on-demand cleanup reuses the merged-PR proof for squash-landed tips across both remotes
+ok - an exact-tip lease preserves a remote branch that advances after landedness proof
+ok - fm-pr-merge's delete flag drives branch deletion against a real scratch origin
