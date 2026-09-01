@@ -47,10 +47,11 @@
 #   (u) index.lock with a live holder, any age                -> lock kept, REFUSE
 #   (v) lsof error while checking index.lock                  -> lock kept, REFUSE
 #   (w) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (x) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (y) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (z) transient lock cleared after first failed return      -> retry ALLOW
-#   (aa) persistent lock (never clears, not provably stale)   -> REFUSE loudly
+#   (x) dirty work appears after first failed return          -> lock removed, REFUSE
+#   (y) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (z) index.lock mtime read failure                         -> lock kept, REFUSE
+#   (aa) transient lock cleared after first failed return     -> retry ALLOW
+#   (ab) persistent lock (never clears, not provably stale)   -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -452,6 +453,46 @@ if [ "${1:-}" = return ]; then
   fi
   echo "fatal: Unable to create '$lock': File exists." >&2
   exit 128
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+add_late_dirty_stale_lock_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  shift
+  wt=""
+  for a in "$@"; do
+    case "$a" in
+      --force) ;;
+      *) wt=$a ;;
+    esac
+  done
+  lock=$(git -C "$wt" rev-parse --git-path index.lock 2>/dev/null || true)
+  case "$lock" in
+    /*|'') ;;
+    *) lock="$wt/$lock" ;;
+  esac
+  count_file="${TREEHOUSE_ATTEMPT_FILE:?}"
+  count=0
+  [ ! -f "$count_file" ] || count=$(cat "$count_file")
+  count=$(( count + 1 ))
+  printf '%s\n' "$count" > "$count_file"
+  if [ "$count" -eq 1 ]; then
+    mkdir -p "$(dirname "$lock")"
+    : > "$lock"
+    touch -t 200001010000 "$lock"
+    printf '%s\n' late-dirty > "$wt/late-dirty.txt"
+  fi
+  if [ -e "$lock" ]; then
+    echo "fatal: Unable to create '$lock': File exists." >&2
+    exit 128
+  fi
+  rm -f "$wt/late-dirty.txt"
 fi
 exit 0
 SH
@@ -1138,6 +1179,42 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   assert_absent "$lock" "stale-lock-dirty-recheck: stale lock file should have been removed"
   [ -f "$case_dir/state/task-x1.meta" ] || fail "stale-lock-dirty-recheck: teardown completed despite dirty work"
   pass "stale lock cleanup rechecks and refuses dirty worktree before return"
+}
+
+test_stale_lock_cleanup_refuses_work_dirtied_after_first_return() {
+  local case_dir rc attempt_file
+  case_dir=$(make_case stale-lock-late-dirty-recheck)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+
+  add_late_dirty_stale_lock_treehouse "$case_dir"
+  add_lsof_no_holder "$case_dir"
+  attempt_file="$case_dir/treehouse-attempts"
+  : > "$attempt_file"
+
+  set +e
+  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
+  FM_TREEHOUSE_RETURN_LOCK_RETRIES=1 \
+  FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=0 \
+  FM_STALE_WORKTREE_LOCK_AGE_SECS=1 \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stale-lock-late-dirty-recheck: teardown must refuse newly dirty work"
+  assert_grep "removed provably-stale git lock" "$case_dir/stderr" \
+    "stale-lock-late-dirty-recheck: teardown did not reach stale-lock cleanup"
+  assert_grep "uncommitted changes present" "$case_dir/stderr" \
+    "stale-lock-late-dirty-recheck: teardown did not restore the full safety check"
+  [ "$(cat "$attempt_file")" = 2 ] \
+    || fail "stale-lock-late-dirty-recheck: destructive final return still ran"
+  [ "$(cat "$case_dir/wt/late-dirty.txt")" = late-dirty ] \
+    || fail "stale-lock-late-dirty-recheck: newly dirty work was discarded"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "stale-lock-late-dirty-recheck: teardown removed task metadata"
+  pass "stale lock cleanup preserves work dirtied after the first return attempt"
 }
 
 test_non_linked_index_lock_path_is_checked_from_worktree() {
@@ -2795,6 +2872,7 @@ test_stale_index_lock_cleared_and_teardown_succeeds
 test_live_index_lock_is_never_removed_and_teardown_refuses
 test_lsof_error_never_clears_index_lock
 test_stale_index_lock_cleanup_rechecks_dirty_worktree
+test_stale_lock_cleanup_refuses_work_dirtied_after_first_return
 test_non_linked_index_lock_path_is_checked_from_worktree
 test_index_lock_mtime_read_failure_refuses
 test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
