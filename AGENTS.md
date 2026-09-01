@@ -296,6 +296,8 @@ Write the task-specific brief under section 11 before spawning.
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
+One rare fleet incident assigned the same reusable Treehouse pool slot to two tasks simultaneously, so unique pool-slot ownership is an assignment-layer invariant.
+If that symptom recurs, investigate and fix the assignment or spawn mechanism itself rather than adding layered branch-ownership checks or locking to destructive teardown cleanup.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
 

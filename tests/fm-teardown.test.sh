@@ -38,20 +38,17 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
-#   (r) --force + worktree on another task's branch             -> REFUSE (ownership)
-#   (s) branch changes after initial ownership validation        -> REFUSE (ownership)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (t) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (u) index.lock with a live holder, any age                -> lock kept, REFUSE
-#   (v) lsof error while checking index.lock                  -> lock kept, REFUSE
-#   (w) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (x) dirty work appears after first failed return          -> lock removed, REFUSE
-#   (y) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (z) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (aa) transient lock cleared after first failed return     -> retry ALLOW
-#   (ab) persistent lock (never clears, not provably stale)   -> REFUSE loudly
+#   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   (s) index.lock with a live holder, any age                -> lock kept, REFUSE
+#   (t) lsof error while checking index.lock                  -> lock kept, REFUSE
+#   (u) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
+#   (v) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (w) index.lock mtime read failure                         -> lock kept, REFUSE
+#   (x) transient lock cleared after first failed return      -> retry ALLOW
+#   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -453,46 +450,6 @@ if [ "${1:-}" = return ]; then
   fi
   echo "fatal: Unable to create '$lock': File exists." >&2
   exit 128
-fi
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/treehouse"
-}
-
-add_late_dirty_stale_lock_treehouse() {
-  local case_dir=$1
-  cat > "$case_dir/fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-}" = return ]; then
-  shift
-  wt=""
-  for a in "$@"; do
-    case "$a" in
-      --force) ;;
-      *) wt=$a ;;
-    esac
-  done
-  lock=$(git -C "$wt" rev-parse --git-path index.lock 2>/dev/null || true)
-  case "$lock" in
-    /*|'') ;;
-    *) lock="$wt/$lock" ;;
-  esac
-  count_file="${TREEHOUSE_ATTEMPT_FILE:?}"
-  count=0
-  [ ! -f "$count_file" ] || count=$(cat "$count_file")
-  count=$(( count + 1 ))
-  printf '%s\n' "$count" > "$count_file"
-  if [ "$count" -eq 1 ]; then
-    mkdir -p "$(dirname "$lock")"
-    : > "$lock"
-    touch -t 200001010000 "$lock"
-    printf '%s\n' late-dirty > "$wt/late-dirty.txt"
-  fi
-  if [ -e "$lock" ]; then
-    echo "fatal: Unable to create '$lock': File exists." >&2
-    exit 128
-  fi
-  rm -f "$wt/late-dirty.txt"
 fi
 exit 0
 SH
@@ -1181,42 +1138,6 @@ test_stale_index_lock_cleanup_rechecks_dirty_worktree() {
   pass "stale lock cleanup rechecks and refuses dirty worktree before return"
 }
 
-test_stale_lock_cleanup_refuses_work_dirtied_after_first_return() {
-  local case_dir rc attempt_file
-  case_dir=$(make_case stale-lock-late-dirty-recheck)
-  write_meta "$case_dir" no-mistakes ship
-  wt_commit "$case_dir" "shippable work"
-  git -C "$case_dir/wt" push -q origin fm/task-x1
-  git -C "$case_dir/project" fetch -q origin
-
-  add_late_dirty_stale_lock_treehouse "$case_dir"
-  add_lsof_no_holder "$case_dir"
-  attempt_file="$case_dir/treehouse-attempts"
-  : > "$attempt_file"
-
-  set +e
-  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
-  FM_TREEHOUSE_RETURN_LOCK_RETRIES=1 \
-  FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=0 \
-  FM_STALE_WORKTREE_LOCK_AGE_SECS=1 \
-    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "stale-lock-late-dirty-recheck: teardown must refuse newly dirty work"
-  assert_grep "removed provably-stale git lock" "$case_dir/stderr" \
-    "stale-lock-late-dirty-recheck: teardown did not reach stale-lock cleanup"
-  assert_grep "uncommitted changes present" "$case_dir/stderr" \
-    "stale-lock-late-dirty-recheck: teardown did not restore the full safety check"
-  [ "$(cat "$attempt_file")" = 2 ] \
-    || fail "stale-lock-late-dirty-recheck: destructive final return still ran"
-  [ "$(cat "$case_dir/wt/late-dirty.txt")" = late-dirty ] \
-    || fail "stale-lock-late-dirty-recheck: newly dirty work was discarded"
-  [ -f "$case_dir/state/task-x1.meta" ] \
-    || fail "stale-lock-late-dirty-recheck: teardown removed task metadata"
-  pass "stale lock cleanup preserves work dirtied after the first return attempt"
-}
-
 test_non_linked_index_lock_path_is_checked_from_worktree() {
   local case_dir rc lock
   case_dir=$(make_case non-linked-index-lock)
@@ -1445,73 +1366,6 @@ test_local_only_force_overrides_unpushed() {
   ! task_branch_exists "$case_dir" \
     || fail "force-override: forced teardown retained the explicitly discarded task branch"
   pass "forced teardown discards the unpushed worktree and its task branch"
-}
-
-test_force_refuses_worktree_owned_by_another_task_branch() {
-  local case_dir rc
-  case_dir=$(make_case force-ownership-mismatch)
-  write_meta "$case_dir" local-only ship
-  git -C "$case_dir/wt" branch -m fm/other-task
-
-  set +e
-  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "force-ownership-mismatch: --force must not discard another task's worktree"
-  assert_grep \
-    "worktree ownership mismatch: expected branch fm/task-x1, found fm/other-task - this worktree may already belong to a different task" \
-    "$case_dir/stderr" \
-    "force-ownership-mismatch: teardown did not report the expected and actual branches"
-  [ -f "$case_dir/state/task-x1.meta" ] \
-    || fail "force-ownership-mismatch: teardown removed task metadata after refusing"
-  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD)" = fm/other-task ] \
-    || fail "force-ownership-mismatch: teardown changed the foreign worktree branch after refusing"
-  pass "forced teardown refuses a worktree checked out on another task's branch"
-}
-
-test_force_refuses_branch_reassigned_after_initial_validation() {
-  local case_dir rc
-  case_dir=$(make_case force-ownership-race)
-  write_meta "$case_dir" local-only ship
-  git -C "$case_dir/wt" branch fm/other-task
-  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
-#!/usr/bin/env bash
-if [ "${1:-} ${2:-}" = "axi status" ]; then
-  git -C "${FM_TEST_RACE_WORKTREE:?}" checkout -q fm/other-task
-fi
-exit 0
-SH
-  cat > "$case_dir/fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-: > "${FM_TEST_TREEHOUSE_CALLED:?}"
-exit 0
-SH
-  chmod +x "$case_dir/fakebin/no-mistakes" "$case_dir/fakebin/treehouse"
-
-  set +e
-  FM_TEST_RACE_WORKTREE="$case_dir/wt" \
-  FM_TEST_TREEHOUSE_CALLED="$case_dir/treehouse-called" \
-    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
-
-  expect_code 1 "$rc" "force-ownership-race: reassignment after initial validation must refuse"
-  assert_grep \
-    "worktree ownership mismatch: expected branch fm/task-x1, found fm/other-task" \
-    "$case_dir/stderr" \
-    "force-ownership-race: teardown did not reject the late ownership change"
-  [ -f "$case_dir/state/task-x1.meta" ] \
-    || fail "force-ownership-race: teardown removed task metadata after refusing"
-  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD)" = fm/other-task ] \
-    || fail "force-ownership-race: teardown changed the reassigned worktree"
-  task_branch_exists "$case_dir" \
-    || fail "force-ownership-race: teardown deleted the recorded task branch"
-  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/other-task \
-    || fail "force-ownership-race: teardown deleted the foreign branch"
-  [ ! -e "$case_dir/treehouse-called" ] \
-    || fail "force-ownership-race: teardown returned the foreign worktree"
-  pass "forced teardown refuses branch reassignment after initial validation"
 }
 
 test_scout_teardown_drops_scratch_task_branch() {
@@ -2842,8 +2696,6 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_teardown_prunes_landed_task_from_both_remotes
 test_local_only_force_overrides_unpushed
-test_force_refuses_worktree_owned_by_another_task_branch
-test_force_refuses_branch_reassigned_after_initial_validation
 test_scout_teardown_drops_scratch_task_branch
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
@@ -2872,7 +2724,6 @@ test_stale_index_lock_cleared_and_teardown_succeeds
 test_live_index_lock_is_never_removed_and_teardown_refuses
 test_lsof_error_never_clears_index_lock
 test_stale_index_lock_cleanup_rechecks_dirty_worktree
-test_stale_lock_cleanup_refuses_work_dirtied_after_first_return
 test_non_linked_index_lock_path_is_checked_from_worktree
 test_index_lock_mtime_read_failure_refuses
 test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds

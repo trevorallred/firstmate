@@ -383,13 +383,9 @@ make_project() {  # <dir>
 }
 
 spawn_task() {  # <id> <home> <project>
-  local id=$1 home=$2 project=$3 meta wt
+  local id=$1 home=$2 project=$3
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr \
-    || return
-  meta="$home/state/$id.meta"
-  wt=$(grep '^worktree=' "$meta" | cut -d= -f2-)
-  git -C "$wt" checkout -q -B "fm/$id"
+    "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'sleep 120'" --mode no-mistakes --yolo off --backend herdr
 }
 
 finish_concurrent_spawn() {  # <id> <status> <stdout> <stderr>

@@ -56,10 +56,8 @@
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
-#   checks, and discards secondmate child work for kind=secondmate. It never skips
-#   task-worktree branch ownership validation against recorded branch metadata,
-#   or fm/<task-id> when that metadata is absent. Only use it when the captain has
-#   explicitly said to discard the work.
+#   checks, and discards secondmate child work for kind=secondmate. Only use it
+#   when the captain has explicitly said to discard the work.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -462,9 +460,6 @@ MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ -n "$MODE" ] || MODE=no-mistakes
 TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=
 TEARDOWN_WORKTREE_TIP_FOR_SAFETY=
-TEARDOWN_EXPECTED_WORKTREE_BRANCH=$(fm_meta_get "$META" branch)
-[ -n "$TEARDOWN_EXPECTED_WORKTREE_BRANCH" ] || TEARDOWN_EXPECTED_WORKTREE_BRANCH="fm/$ID"
-TEARDOWN_WORKTREE_TIP_AFTER_BRANCH_CLEANUP=
 PUBLIC_FOLLOWUP_HOME=$FM_HOME
 PUBLIC_FOLLOWUP_STATE=$STATE
 PUBLIC_FOLLOWUP_WORK_HOME=main
@@ -867,7 +862,6 @@ STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS
 TEARDOWN_TREEHOUSE_LOCK_REFUSED=2
 TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED=3
 TEARDOWN_PROCEVENT_RESTORE_FAILED=4
-TEARDOWN_WORKTREE_OWNERSHIP_REFUSED=5
 
 # True when treehouse/git stderr shows the transient index.lock "File exists" race.
 # Other return failures must not enter the retry path.
@@ -931,12 +925,11 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return() {
-  local dir=$1 cd_dir=$2 label=$3 pre_return_check=${4:-} post_cleanup_check=${5:-}
+  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
   local out lock attempt=0 max_retries lock_desc
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
-  [ -z "$pre_return_check" ] || "$pre_return_check" || return 1
   if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
@@ -962,7 +955,6 @@ teardown_treehouse_return() {
     echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
-    [ -z "$pre_return_check" ] || "$pre_return_check" || return 1
     if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
@@ -984,10 +976,11 @@ teardown_treehouse_return() {
     if fm_lock_is_provably_stale "$lock" "$dir" "$STALE_WORKTREE_LOCK_AGE_SECS"; then
       rm -f "$lock"
       echo "teardown: removed provably-stale git lock $lock (age >= ${STALE_WORKTREE_LOCK_AGE_SECS}s, no live holder) and retrying $label return" >&2
-      if { [ -n "$pre_return_check" ] && ! "$pre_return_check"; } \
-         || { [ -n "$post_cleanup_check" ] && ! "$post_cleanup_check"; }; then
-        echo "teardown: $label return aborted after stale-lock cleanup because safety checks failed" >&2
-        return 1
+      if [ -n "$post_cleanup_check" ]; then
+        if ! "$post_cleanup_check"; then
+          echo "teardown: $label return aborted after stale-lock cleanup because safety checks failed" >&2
+          return 1
+        fi
       fi
       if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
         [ -n "$out" ] && printf '%s\n' "$out"
@@ -1007,42 +1000,13 @@ teardown_treehouse_return() {
   return 1
 }
 
-validate_worktree_branch_ownership() {
-  local actual_branch
-  [ -d "$WT" ] || return 0
-  actual_branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo HEAD)
-  if [ "$actual_branch" != "$TEARDOWN_EXPECTED_WORKTREE_BRANCH" ]; then
-    echo "REFUSED: worktree ownership mismatch: expected branch $TEARDOWN_EXPECTED_WORKTREE_BRANCH, found $actual_branch - this worktree may already belong to a different task." >&2
-    return 1
-  fi
-}
-
-validate_worktree_branch_ownership_after_cleanup() {
-  local actual_branch actual_tip
-  [ -d "$WT" ] || return 0
-  actual_branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo HEAD)
-  [ "$actual_branch" = "$TEARDOWN_EXPECTED_WORKTREE_BRANCH" ] && return 0
-  if [ "$actual_branch" = HEAD ] && [ -n "$TEARDOWN_WORKTREE_TIP_AFTER_BRANCH_CLEANUP" ]; then
-    actual_tip=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null || true)
-    [ "$actual_tip" = "$TEARDOWN_WORKTREE_TIP_AFTER_BRANCH_CLEANUP" ] && return 0
-  fi
-  echo "REFUSED: worktree ownership mismatch: expected branch $TEARDOWN_EXPECTED_WORKTREE_BRANCH, found $actual_branch - this worktree may already belong to a different task." >&2
-  return 1
-}
-
-validate_worktree_teardown_safety_with_ownership() {
-  local ownership_check=$1
+validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch tip
   [ -d "$WT" ] || return 0
-  case "$KIND" in
-    secondmate) return 0 ;;
-  esac
-
-  "$ownership_check" || return 1
-  branch=$TEARDOWN_EXPECTED_WORKTREE_BRANCH
-
   [ "$FORCE" != "--force" ] || return 0
-  [ "$KIND" != scout ] || return 0
+  case "$KIND" in
+    secondmate|scout) return 0 ;;
+  esac
 
   if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
@@ -1054,6 +1018,7 @@ validate_worktree_teardown_safety_with_ownership() {
   fi
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
 
+  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   tip=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || {
     echo "REFUSED: cannot inspect worktree $WT branch tip." >&2
     return 1
@@ -1102,14 +1067,6 @@ validate_worktree_teardown_safety_with_ownership() {
       return 1
     fi
   fi
-}
-
-validate_worktree_teardown_safety() {
-  validate_worktree_teardown_safety_with_ownership validate_worktree_branch_ownership
-}
-
-validate_worktree_teardown_safety_after_cleanup() {
-  validate_worktree_teardown_safety_with_ownership validate_worktree_branch_ownership_after_cleanup
 }
 
 # Fix 1 (see script header): does the active-or-most-recent no-mistakes run in
@@ -2282,7 +2239,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] &&
   ORCA_PATH_MATCH_VERIFIED=1
 fi
 
-if [ -d "$WT" ]; then
+if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   if validate_worktree_teardown_safety; then
     :
   else
@@ -2305,9 +2262,7 @@ fi
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
-  validate_worktree_branch_ownership || exit 1
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
-  validate_worktree_branch_ownership || exit 1
 fi
 
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
@@ -2340,13 +2295,12 @@ teardown_drop_task_branch_locked() {
   local wt=$1 branch tip expected default remote remote_tip
   branch=$2
   tip=$3
-  validate_worktree_branch_ownership || return "$TEARDOWN_WORKTREE_OWNERSHIP_REFUSED"
-  [ "$branch" = "$TEARDOWN_EXPECTED_WORKTREE_BRANCH" ] || return "$TEARDOWN_WORKTREE_OWNERSHIP_REFUSED"
+  [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)" = "$branch" ] || return 0
   [ "$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null || true)" = "$tip" ] || return 0
 
   if [ "$FORCE" != --force ] && [ "$KIND" != scout ]; then
     expected=${TEARDOWN_WORKTREE_TIP_FOR_SAFETY:-}
-    [ "$branch" = "${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-}" ] || return "$TEARDOWN_WORKTREE_OWNERSHIP_REFUSED"
+    [ "$branch" = "${TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY:-}" ] || return 0
     [ -n "$expected" ] && [ "$tip" = "$expected" ] || return 0
   fi
 
@@ -2378,18 +2332,11 @@ teardown_drop_task_branch_locked() {
 }
 
 teardown_drop_task_branch() {
-  local wt=$1 branch tip rc
-  validate_worktree_branch_ownership || return 1
-  branch=$TEARDOWN_EXPECTED_WORKTREE_BRANCH
+  local wt=$1 branch tip
+  branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  [ "$branch" != HEAD ] || return 0
   tip=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null) || return 0
-  TEARDOWN_WORKTREE_TIP_AFTER_BRANCH_CLEANUP=$tip
-  if fm_branch_with_cleanup_lock "$wt" "$branch" teardown_drop_task_branch_locked "$tip"; then
-    return 0
-  else
-    rc=$?
-  fi
-  [ "$rc" -ne "$TEARDOWN_WORKTREE_OWNERSHIP_REFUSED" ] || return 1
-  return 0
+  fm_branch_with_cleanup_lock "$wt" "$branch" teardown_drop_task_branch_locked "$tip" || true
 }
 
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
@@ -2399,18 +2346,15 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     ORCA_PATH_MATCH_VERIFIED=1
   fi
   if [ -d "$WT" ]; then
-    teardown_drop_task_branch "$WT" || exit 1
-    validate_worktree_branch_ownership_after_cleanup || exit 1
+    teardown_drop_task_branch "$WT"
     rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
       "$WT/.opencode/plugins/fm-busy-state.js" \
       "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
   fi
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
-  validate_worktree_branch_ownership_after_cleanup || exit 1
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
-  teardown_drop_task_branch "$WT" || exit 1
-  validate_worktree_branch_ownership_after_cleanup || exit 1
+  teardown_drop_task_branch "$WT"
   # Remove our hook file so a reused pool worktree cannot fire signals for a dead task.
   rm -f "$WT/.claude/settings.local.json" "$WT/.opencode/plugins/fm-turn-end.js" \
     "$WT/.fm-grok-turnend" "$WT/.fm-kimi-turnend"
@@ -2419,11 +2363,10 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   # the project. teardown_treehouse_return tolerates transient and stale git locks
   # left by a killed crew process; see the script header for retry and stale-lock proof.
   post_lock_cleanup_check=
-  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ]; then
-    post_lock_cleanup_check=validate_worktree_teardown_safety_after_cleanup
+  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
+    post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
-  teardown_treehouse_return "$WT" "$PROJ" "worktree" \
-    validate_worktree_branch_ownership_after_cleanup "$post_lock_cleanup_check" || {
+  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }
