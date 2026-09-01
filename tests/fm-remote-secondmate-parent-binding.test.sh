@@ -235,6 +235,7 @@ done
 
 run_child_teardown() { # <extra env assignments...>
   local out rc=0
+  git -C "$CHILD_WT" checkout -q -B fm/work-child
   write_child_meta
   out=$(env "$@" PATH="$TMP_ROOT/childfake:$PATH" \
     FM_HOME="$REMOTE_HOME" FM_STATE_OVERRIDE="$REMOTE_HOME/state" \
