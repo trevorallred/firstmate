@@ -57,7 +57,8 @@
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. It never skips
-#   task-worktree branch ownership validation. Only use it when the captain has
+#   task-worktree branch ownership validation against recorded branch metadata,
+#   or fm/<task-id> when that metadata is absent. Only use it when the captain has
 #   explicitly said to discard the work.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
