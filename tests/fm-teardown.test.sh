@@ -39,17 +39,18 @@
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
 #   (r) --force + worktree on another task's branch             -> REFUSE (ownership)
+#   (s) branch changes after initial ownership validation        -> REFUSE (ownership)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (s) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (t) index.lock with a live holder, any age                -> lock kept, REFUSE
-#   (u) lsof error while checking index.lock                  -> lock kept, REFUSE
-#   (v) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (w) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (x) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (y) transient lock cleared after first failed return      -> retry ALLOW
-#   (z) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   (t) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   (u) index.lock with a live holder, any age                -> lock kept, REFUSE
+#   (v) lsof error while checking index.lock                  -> lock kept, REFUSE
+#   (w) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
+#   (x) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (y) index.lock mtime read failure                         -> lock kept, REFUSE
+#   (z) transient lock cleared after first failed return      -> retry ALLOW
+#   (aa) persistent lock (never clears, not provably stale)   -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -1392,6 +1393,50 @@ test_force_refuses_worktree_owned_by_another_task_branch() {
   pass "forced teardown refuses a worktree checked out on another task's branch"
 }
 
+test_force_refuses_branch_reassigned_after_initial_validation() {
+  local case_dir rc
+  case_dir=$(make_case force-ownership-race)
+  write_meta "$case_dir" local-only ship
+  git -C "$case_dir/wt" branch fm/other-task
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "axi status" ]; then
+  git -C "${FM_TEST_RACE_WORKTREE:?}" checkout -q fm/other-task
+fi
+exit 0
+SH
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+: > "${FM_TEST_TREEHOUSE_CALLED:?}"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes" "$case_dir/fakebin/treehouse"
+
+  set +e
+  FM_TEST_RACE_WORKTREE="$case_dir/wt" \
+  FM_TEST_TREEHOUSE_CALLED="$case_dir/treehouse-called" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "force-ownership-race: reassignment after initial validation must refuse"
+  assert_grep \
+    "worktree ownership mismatch: expected branch fm/task-x1, found fm/other-task" \
+    "$case_dir/stderr" \
+    "force-ownership-race: teardown did not reject the late ownership change"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "force-ownership-race: teardown removed task metadata after refusing"
+  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD)" = fm/other-task ] \
+    || fail "force-ownership-race: teardown changed the reassigned worktree"
+  task_branch_exists "$case_dir" \
+    || fail "force-ownership-race: teardown deleted the recorded task branch"
+  git -C "$case_dir/project" show-ref --verify --quiet refs/heads/fm/other-task \
+    || fail "force-ownership-race: teardown deleted the foreign branch"
+  [ ! -e "$case_dir/treehouse-called" ] \
+    || fail "force-ownership-race: teardown returned the foreign worktree"
+  pass "forced teardown refuses branch reassignment after initial validation"
+}
+
 test_scout_teardown_drops_scratch_task_branch() {
   local case_dir rc
   case_dir=$(make_case scout-branch-retention)
@@ -2721,6 +2766,7 @@ test_no_mistakes_truly_unpushed_refuses
 test_teardown_prunes_landed_task_from_both_remotes
 test_local_only_force_overrides_unpushed
 test_force_refuses_worktree_owned_by_another_task_branch
+test_force_refuses_branch_reassigned_after_initial_validation
 test_scout_teardown_drops_scratch_task_branch
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker
