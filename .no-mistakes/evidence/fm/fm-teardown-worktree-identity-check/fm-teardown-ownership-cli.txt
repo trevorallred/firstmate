@@ -1,0 +1,33 @@
+SCENARIO 1 — force teardown on another task branch
+$ fm-teardown.sh task-x1 --force
+exit_code=1
+REFUSED: worktree ownership mismatch: expected branch fm/task-x1, found fm/other-task - this worktree may already belong to a different task.
+actual_branch=fm/other-task
+task_metadata=preserved
+
+SCENARIO 2 — branch changes after initial validation
+$ fm-teardown.sh task-x1 --force
+exit_code=1
+REFUSED: worktree ownership mismatch: expected branch fm/task-x1, found fm/other-task - this worktree may already belong to a different task.
+actual_branch=fm/other-task
+task_metadata=preserved
+treehouse_return=not_called
+recorded_task_branch=2f48e3371b183fedc3b42521654228e04c747b23
+foreign_branch=2f48e3371b183fedc3b42521654228e04c747b23
+
+SCENARIO 3 — dirty work appears after first lock failure
+$ fm-teardown.sh task-x1
+exit_code=1
+teardown: removed provably-stale git lock /private/var/folders/s1/bry9y_vx07ndmqrkm45jxgvw0000gn/T/fm-teardown-tests.UJVYnQ/stale-lock-late-dirty-recheck/project/.git/worktrees/wt/index.lock (age >= 1s, no live holder) and retrying worktree return
+uncommitted changes present
+teardown: worktree return aborted after stale-lock cleanup because safety checks failed
+error: treehouse return failed for worktree /var/folders/s1/bry9y_vx07ndmqrkm45jxgvw0000gn/T//fm-teardown-tests.UJVYnQ/stale-lock-late-dirty-recheck/wt; teardown aborted
+treehouse_attempts=2
+late_dirty_file=late-dirty
+task_metadata=preserved
+
+SCENARIO 4 — recorded custom branch metadata is honored
+$ fm-teardown.sh task-x1 --force
+exit_code=0
+task_metadata=removed_after_success
+current_head=HEAD
