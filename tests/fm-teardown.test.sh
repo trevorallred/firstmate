@@ -38,17 +38,18 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (r) --force + worktree on another task's branch             -> REFUSE (ownership)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
-#   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
-#   (s) index.lock with a live holder, any age                -> lock kept, REFUSE
-#   (t) lsof error while checking index.lock                  -> lock kept, REFUSE
-#   (u) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
-#   (v) non-linked repo index.lock                            -> lock removed, ALLOW
-#   (w) index.lock mtime read failure                         -> lock kept, REFUSE
-#   (x) transient lock cleared after first failed return      -> retry ALLOW
-#   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#   (s) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
+#   (t) index.lock with a live holder, any age                -> lock kept, REFUSE
+#   (u) lsof error while checking index.lock                  -> lock kept, REFUSE
+#   (v) dirty worktree after stale lock cleanup               -> lock removed, REFUSE
+#   (w) non-linked repo index.lock                            -> lock removed, ALLOW
+#   (x) index.lock mtime read failure                         -> lock kept, REFUSE
+#   (y) transient lock cleared after first failed return      -> retry ALLOW
+#   (z) persistent lock (never clears, not provably stale)    -> REFUSE loudly
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -1366,6 +1367,29 @@ test_local_only_force_overrides_unpushed() {
   ! task_branch_exists "$case_dir" \
     || fail "force-override: forced teardown retained the explicitly discarded task branch"
   pass "forced teardown discards the unpushed worktree and its task branch"
+}
+
+test_force_refuses_worktree_owned_by_another_task_branch() {
+  local case_dir rc
+  case_dir=$(make_case force-ownership-mismatch)
+  write_meta "$case_dir" local-only ship
+  git -C "$case_dir/wt" branch -m fm/other-task
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "force-ownership-mismatch: --force must not discard another task's worktree"
+  assert_grep \
+    "worktree ownership mismatch: expected branch fm/task-x1, found fm/other-task - this worktree may already belong to a different task" \
+    "$case_dir/stderr" \
+    "force-ownership-mismatch: teardown did not report the expected and actual branches"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "force-ownership-mismatch: teardown removed task metadata after refusing"
+  [ "$(git -C "$case_dir/wt" symbolic-ref --quiet --short HEAD)" = fm/other-task ] \
+    || fail "force-ownership-mismatch: teardown changed the foreign worktree branch after refusing"
+  pass "forced teardown refuses a worktree checked out on another task's branch"
 }
 
 test_scout_teardown_drops_scratch_task_branch() {
@@ -2696,6 +2720,7 @@ test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_teardown_prunes_landed_task_from_both_remotes
 test_local_only_force_overrides_unpushed
+test_force_refuses_worktree_owned_by_another_task_branch
 test_scout_teardown_drops_scratch_task_branch
 test_teardown_missing_busy_sidecar_completes
 test_herdr_teardown_clears_escalation_marker

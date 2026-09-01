@@ -56,8 +56,9 @@
 # leased home and state in place instead of hiding a still-held lease.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
-#   checks, and discards secondmate child work for kind=secondmate. Only use it
-#   when the captain has explicitly said to discard the work.
+#   checks, and discards secondmate child work for kind=secondmate. It never skips
+#   task-worktree branch ownership validation. Only use it when the captain has
+#   explicitly said to discard the work.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -1001,12 +1002,22 @@ teardown_treehouse_return() {
 }
 
 validate_worktree_teardown_safety() {
-  local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch tip
+  local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch expected_branch tip
   [ -d "$WT" ] || return 0
-  [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
-    secondmate|scout) return 0 ;;
+    secondmate) return 0 ;;
   esac
+
+  expected_branch=$(fm_meta_get "$META" branch)
+  [ -n "$expected_branch" ] || expected_branch="fm/$ID"
+  branch=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo HEAD)
+  if [ "$branch" != "$expected_branch" ]; then
+    echo "REFUSED: worktree ownership mismatch: expected branch $expected_branch, found $branch - this worktree may already belong to a different task." >&2
+    return 1
+  fi
+
+  [ "$FORCE" != "--force" ] || return 0
+  [ "$KIND" != scout ] || return 0
 
   if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
@@ -1018,7 +1029,6 @@ validate_worktree_teardown_safety() {
   fi
   dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
 
-  branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   tip=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || {
     echo "REFUSED: cannot inspect worktree $WT branch tip." >&2
     return 1
@@ -2239,7 +2249,7 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] &&
   ORCA_PATH_MATCH_VERIFIED=1
 fi
 
-if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
+if [ -d "$WT" ]; then
   if validate_worktree_teardown_safety; then
     :
   else
