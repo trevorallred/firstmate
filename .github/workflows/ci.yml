@@ -77,6 +77,11 @@ jobs:
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
       - name: Upload shard 1 timing artifact
         if: always()
+        # Best-effort: this is diagnostic timing data for tests-timing-aggregate,
+        # which already tolerates missing lane artifacts. A transient artifact
+        # backend error (e.g. 403 FinalizeArtifact) must not fail the lane when
+        # the actual test run above already passed.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: fm-test-timing-portable-parallel-1
@@ -114,6 +119,8 @@ jobs:
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
       - name: Upload shard 2 timing artifact
         if: always()
+        # Best-effort: see the shard 1 upload step above for rationale.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: fm-test-timing-portable-parallel-2
@@ -179,6 +186,8 @@ jobs:
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
       - name: Upload portable serial shard ${{ matrix.shard }} timing artifact
         if: always()
+        # Best-effort: see the parallel shard 1 upload step above for rationale.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: fm-test-timing-portable-serial-${{ matrix.shard }}
@@ -299,6 +308,8 @@ jobs:
           }
       - name: Upload Herdr timing and diagnostics
         if: always()
+        # Best-effort: see the parallel shard 1 upload step above for rationale.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: fm-test-timing-herdr
@@ -341,6 +352,8 @@ jobs:
             "${inputs[@]}"
       - name: Upload aggregate timing artifact
         if: always()
+        # Best-effort: this is a diagnostic summary, not a test result.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: fm-test-timing-aggregate
