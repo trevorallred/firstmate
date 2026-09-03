@@ -288,6 +288,7 @@ Valid files stay silent by default; with `FM_BOOTSTRAP_VERBOSE_FACTS=1`, bootstr
 Malformed JSON, an empty or malformed rule/default array, an unverified harness, or an effort value unsupported by that harness is reported as `CREW_DISPATCH: invalid config/crew-dispatch.json - ...`; missing `jq` is reported through the normal `MISSING: jq` install-consent flow.
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
+To switch which harness this file's `default` and every rule's `use` resolve to - together with the matching `agent:` value in the machine-wide no-mistakes global config - run `bin/fm-model-switch.sh <harness> [effort]`; see that script's own header for exactly what it changes and its safety and idempotency guarantees.
 
 ## Toolchain
 
