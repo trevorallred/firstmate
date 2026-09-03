@@ -143,11 +143,20 @@ done
 # Edited as raw text (never re-serialized) so hand-authored formatting,
 # comments-adjacent JSON key order, and every rule's "when"/"why" prose survive
 # byte-for-byte. See this script's header for exactly what changes.
+#
+# Both files below are staged first (computed and, if changed, written to a
+# sibling temp file via mktemp - never a direct `open(path, "w")` overwrite)
+# and only renamed into place once every validation and staging step for both
+# files has already succeeded. This keeps a crash/kill/disk-full mid-write from
+# truncating either file, and keeps the two config files from ever landing on
+# a rename-only inconsistency window instead of the much wider one a full
+# read-validate-write per file would leave.
 new_dispatch=$(FM_MODEL_SWITCH_HARNESS="$harness" FM_MODEL_SWITCH_EFFORT="$effort" python3 - "$DISPATCH_FILE" <<'PY'
 import json
 import os
 import re
 import sys
+import tempfile
 
 path = sys.argv[1]
 harness = os.environ["FM_MODEL_SWITCH_HARNESS"]
@@ -233,34 +242,49 @@ out = re.sub(
 # Fail closed rather than write a result that no longer parses.
 json.loads(out)
 
-# Written here (rather than printed for the caller to redirect) so a trailing
+# Staged here (rather than printed for the caller to redirect) so a trailing
 # newline - or its deliberate absence - survives exactly: command substitution
 # in the calling shell strips trailing newlines, which a round trip through it
-# would silently lose.
+# would silently lose. Written to a sibling temp file, not the target path
+# directly; the caller only renames it into place once both files are staged.
 if out == raw:
     print("UNCHANGED")
 else:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(out)
-    print("CHANGED")
+    dest_dir = os.path.dirname(os.path.abspath(path)) or "."
+    orig_mode = os.stat(path).st_mode
+    fd, tmp_path = tempfile.mkstemp(prefix=".fm-model-switch.dispatch.", dir=dest_dir)
+    try:
+        os.chmod(tmp_path, orig_mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(out)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
+    print(f"CHANGED {tmp_path}")
 PY
 )
 dispatch_result=$?
 [ "$dispatch_result" -eq 0 ] || exit 1
-[ "$new_dispatch" = "CHANGED" ] && dispatch_changed=1 || dispatch_changed=0
+case "$new_dispatch" in
+  "CHANGED "*) dispatch_changed=1; dispatch_tmp=${new_dispatch#CHANGED } ;;
+  *) dispatch_changed=0; dispatch_tmp="" ;;
+esac
 
 # --- ~/.no-mistakes/config.yaml agent: field ---------------------------------
 #
 # Only the single active "agent:" line changes; every comment, blank line, and
 # every other setting - including a missing/present trailing newline - is
 # preserved exactly. The active line is anchored at column 0 so commented
-# example lines ("# ... agent: [codex, claude]") are never touched. Written
-# directly by the python process for the same trailing-newline-precision
-# reason given above, rather than round-tripped through this shell.
+# example lines ("# ... agent: [codex, claude]") are never touched. Staged to
+# a sibling temp file by the python process for the same trailing-newline-
+# precision reason given above; the caller renames it into place below.
 new_nm_result=$(FM_MODEL_SWITCH_HARNESS="$harness" python3 - "$NOMISTAKES_CONFIG" <<'PY'
 import os
 import re
 import sys
+import tempfile
 
 path = sys.argv[1]
 harness = os.environ["FM_MODEL_SWITCH_HARNESS"]
@@ -276,14 +300,49 @@ if n != 1:
 if out == raw:
     print("UNCHANGED")
 else:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(out)
-    print("CHANGED")
+    dest_dir = os.path.dirname(os.path.abspath(path)) or "."
+    orig_mode = os.stat(path).st_mode
+    fd, tmp_path = tempfile.mkstemp(prefix=".fm-model-switch.nomistakes.", dir=dest_dir)
+    try:
+        os.chmod(tmp_path, orig_mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(out)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        os.unlink(tmp_path)
+        raise
+    print(f"CHANGED {tmp_path}")
 PY
 )
 nomistakes_result=$?
 [ "$nomistakes_result" -eq 0 ] || exit 1
-[ "$new_nm_result" = "CHANGED" ] && nomistakes_changed=1 || nomistakes_changed=0
+case "$new_nm_result" in
+  "CHANGED "*) nomistakes_changed=1; nomistakes_tmp=${new_nm_result#CHANGED } ;;
+  *) nomistakes_changed=0; nomistakes_tmp="" ;;
+esac
+
+# Both files are validated and staged; commit them together now so the window
+# in which one target could be switched while the other still holds its old
+# value is just these two renames, not the full read-validate-write above.
+cleanup_staged() {
+  [ -n "$dispatch_tmp" ] && rm -f "$dispatch_tmp" 2>/dev/null || true
+  [ -n "$nomistakes_tmp" ] && rm -f "$nomistakes_tmp" 2>/dev/null || true
+}
+
+if [ "$dispatch_changed" -eq 1 ]; then
+  if ! mv -f "$dispatch_tmp" "$DISPATCH_FILE" 2>/dev/null; then
+    cleanup_staged
+    refuse "could not write $DISPATCH_FILE"
+  fi
+fi
+
+if [ "$nomistakes_changed" -eq 1 ]; then
+  if ! mv -f "$nomistakes_tmp" "$NOMISTAKES_CONFIG" 2>/dev/null; then
+    rm -f "$nomistakes_tmp" 2>/dev/null || true
+    refuse "could not write $NOMISTAKES_CONFIG (crew dispatch was already switched to '$harness')"
+  fi
+fi
 
 echo "crew dispatch: $DISPATCH_FILE"
 if [ "$dispatch_changed" -eq 1 ]; then
