@@ -351,6 +351,11 @@ test_no_mistakes_dod_wording() {
   # guards the structure that makes it safe.
   assert_grep "firstmate's authority check" "$brief" \
     "no-mistakes DOD lost the apostrophe prose that the structural fix makes parse-safe"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'Immediately after invoking `no-mistakes axi run`, push your current committed branch to origin and open a draft PR' "$brief" \
+    "no-mistakes DOD must instruct the worker to push and open an early draft PR right after starting the run"
+  assert_grep "defer to the pipeline's PR rather than create a second one" "$brief" \
+    "no-mistakes DOD must tell the worker to defer to the pipeline's own PR on a push/PR race"
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
