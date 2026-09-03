@@ -138,6 +138,13 @@ for opt in "${nm_options[@]}"; do
 done
 [ "$agent_supported" -eq 1 ] || refuse "no-mistakes has no 'agent:' value for harness '$harness' (documented options:$options_csv)"
 
+dispatch_tmp=""
+nomistakes_tmp=""
+cleanup_staged() {
+  [ -n "$dispatch_tmp" ] && rm -f "$dispatch_tmp" 2>/dev/null || true
+  [ -n "$nomistakes_tmp" ] && rm -f "$nomistakes_tmp" 2>/dev/null || true
+}
+
 # --- config/crew-dispatch.json -----------------------------------------------
 #
 # Edited as raw text (never re-serialized) so hand-authored formatting,
@@ -266,7 +273,7 @@ else:
 PY
 )
 dispatch_result=$?
-[ "$dispatch_result" -eq 0 ] || exit 1
+[ "$dispatch_result" -eq 0 ] || { cleanup_staged; exit 1; }
 case "$new_dispatch" in
   "CHANGED "*) dispatch_changed=1; dispatch_tmp=${new_dispatch#CHANGED } ;;
   *) dispatch_changed=0; dispatch_tmp="" ;;
@@ -316,7 +323,7 @@ else:
 PY
 )
 nomistakes_result=$?
-[ "$nomistakes_result" -eq 0 ] || exit 1
+[ "$nomistakes_result" -eq 0 ] || { cleanup_staged; exit 1; }
 case "$new_nm_result" in
   "CHANGED "*) nomistakes_changed=1; nomistakes_tmp=${new_nm_result#CHANGED } ;;
   *) nomistakes_changed=0; nomistakes_tmp="" ;;
@@ -325,11 +332,6 @@ esac
 # Both files are validated and staged; commit them together now so the window
 # in which one target could be switched while the other still holds its old
 # value is just these two renames, not the full read-validate-write above.
-cleanup_staged() {
-  [ -n "$dispatch_tmp" ] && rm -f "$dispatch_tmp" 2>/dev/null || true
-  [ -n "$nomistakes_tmp" ] && rm -f "$nomistakes_tmp" 2>/dev/null || true
-}
-
 if [ "$dispatch_changed" -eq 1 ]; then
   if ! mv -f "$dispatch_tmp" "$DISPATCH_FILE" 2>/dev/null; then
     cleanup_staged
